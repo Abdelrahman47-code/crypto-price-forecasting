@@ -1,0 +1,12 @@
+streamlit
+yfinance
+statsmodels
+arch
+scikit-learn
+matplotlib
+tensorflow
+pandas
+numpy
+joblib
+transformers
+torch
