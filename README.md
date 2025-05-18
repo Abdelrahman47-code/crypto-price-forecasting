@@ -5,31 +5,31 @@ Welcome to the **Crypto Price Predictor**, a web-based application built with St
 
 ## 👥 Team Members
 
-1) Abdelrahman Ahmed Eldaba - 412200228
-2) Mohamed Hamza Moawad - 412200058
-3) Ahmed Mohamed Esmail - 412200120
-4) Hoda Mohamed Elwakeel - 412200403
-5) Al-Zahra Ali Eissa - 412200010
-6) Aseel Samy Al-Faqih - 412200430
+1) **Abdelrahman Ahmed Eldaba** - 412200228
+2) **Mohamed Hamza Moawad** - 412200058
+3) **Ahmed Mohamed Esmail** - 412200120
+4) **Hoda Mohamed Elwakeel** - 412200403
+5) **Al-Zahra Ali Eissa** - 412200010
+6) **Aseel Samy Al-Faqih** - 412200430
 
 
 ## 📸 UI Screenshots
-![image]("frontend/images/screen_1.png")
+![image](frontend/images/screen_1.png)
 
 ---
 
-![image]("frontend/images/screen_2.png")
+![image](frontend/images/screen_2.png)
 
 ---
 
-![image]("frontend/images/screen_3.png")
+![image](frontend/images/screen_3.png)
 
 ---
 
-![image]("frontend/images/screen_4.png")
+![image](frontend/images/screen_4.png)
 ---
 
-![image]("frontend/images/screen_5.png")
+![image](frontend/images/screen_5.png)
 
 ## 🚀 Features
 
@@ -120,29 +120,29 @@ Before running the project, ensure you have the following:
 Below is the file structure of the project:
 
 ```
-crypto_app/
+crypto_price_forecasting/
 │
-├── app.py                    # Main Streamlit application
-├── requirements.txt          # List of Python dependencies (create if needed)
+├── app.py
+├── requirements.txt
 │
-├── backend/                  # Backend logic for training and prediction
-│   ├── models/                 # Trained Models
-│   └── predictor.py          # Predictor class for loading models and forecasting
-│   └── train_models.py       # Script to train and save models
-│   └── data_utils.py         # Data loading and Utility functions
+├── backend/
+│   ├── models/
+│   ├── predictor.py
+│   ├── train_models.py
+│   └── data_utils.py
 │
-├── data/                     # Directory for CSV data files
+├── data/
 │   ├── btc_15m_data_2018_to_2025.csv
 │   ├── btc_1h_data_2018_to_2025.csv
 │   ├── btc_4h_data_2018_to_2025.csv
 │   └── btc_1d_data_2018_to_2025.csv
 │
-├── frontend/                 # Frontend components for the Streamlit app
-│   ├── images/               # Images for the app (e.g., sidebar logo)
+├── frontend/
+│   ├── images/
 │   │   └── crypto_logo.png
-│   ├── styles/               # CSS styles
+│   ├── styles/
 │   │   └── streamlit_style.css
-│   └── tabs/                 # Tab-specific modules
+│   └── tabs/
 │       ├── arima_forecast.py
 │       ├── garch_forecast.py
 │       ├── lstm_forecast.py
@@ -152,7 +152,7 @@ crypto_app/
 │       ├── var_forecast.py
 │       └── varma_forecast.py
 │
-└── README.md                 # Project documentation
+└── README.md
 ```
 
 ## ⚠️ Troubleshooting
