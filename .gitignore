@@ -1,0 +1,28 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Environment
+.env
+.venv/
+env/
+venv/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Jupyter Notebooks Checkpoints
+.ipynb_checkpoints
+
+# Large models and datasets
+*.pkl
+*.h5
+*.csv
+
+# Ignore models directory
+backend/models/
+
+# Ignore data directory
+data/
