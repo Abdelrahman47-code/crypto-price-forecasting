@@ -1,64 +1,87 @@
-import pandas as pd
 import numpy as np
-import yfinance as yf
+import pandas as pd
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.statespace.sarimax import SARIMAX
+from statsmodels.tsa.vector_ar.var_model import VAR
+from statsmodels.tsa.statespace.varmax import VARMAX
 from arch import arch_model
 from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Model, Sequential
-from tensorflow.keras.layers import Input, Dense, LayerNormalization, MultiHeadAttention, Dropout, GlobalAveragePooling1D, LSTM
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, LSTM
 from sklearn.metrics import mean_squared_error
 from itertools import product
 import joblib
 import os
+from datetime import timedelta
+from data_utils import get_local_data, ensure_stationarity_multivariate
 
-def transformer_encoder(inputs, head_size, num_heads, ff_dim, dropout=0):
-    x = MultiHeadAttention(key_dim=head_size, num_heads=num_heads, dropout=dropout)(inputs, inputs)
-    x = Dropout(dropout)(x)
-    x = LayerNormalization(epsilon=1e-6)(x + inputs)
-    x_ff = Dense(ff_dim, activation="relu")(x)
-    x_ff = Dense(inputs.shape[-1])(x_ff)
-    x_ff = Dropout(dropout)(x_ff)
-    x = LayerNormalization(epsilon=1e-6)(x + x_ff)
-    return x
-
-def build_transformer_model(time_step, features, head_size=64, num_heads=4, ff_dim=64, num_transformer_blocks=2, dropout=0.1):
-    inputs = Input(shape=(time_step, features))
-    x = inputs
-    for _ in range(num_transformer_blocks):
-        x = transformer_encoder(x, head_size, num_heads, ff_dim, dropout)
-    x = GlobalAveragePooling1D()(x)
-    x = Dense(32, activation="relu")(x)
-    x = Dropout(dropout)(x)
-    outputs = Dense(1)(x)
-    return Model(inputs, outputs)
-
-def train_and_save_models(symbol="BTC-USD", period="2y", interval="1d", target_column="Close"):
-    # Create models directory if it doesn't exist
-    model_dir = "backend/models"
+def train_and_save_models(file_path, interval, target_column="Close", lookback_days=365):
+    # Create model directory for the interval
+    model_dir = f"backend/models/{interval}"
     os.makedirs(model_dir, exist_ok=True)
 
     # Fetch data
     try:
-        data = yf.download(symbol, period=period, interval=interval)
-        data = data[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
-        if data.empty:
-            raise ValueError("No data fetched from yfinance.")
+        data = get_local_data(file_path, interval)
+        if data is None or data.empty:
+            raise ValueError(f"No data loaded from {file_path}.")
     except Exception as e:
-        print(f"Error fetching data: {str(e)}")
+        print(f"Error loading data for {interval}: {str(e)}")
         return
 
-    # Adjust train-test split for larger dataset (90/10 split to maximize training data)
-    train_size = int(len(data) * 0.9)  # ~453 days for training, ~51 for testing with period="2y"
-    train, test = data[:train_size], data[train_size:]
+    # Validate index
+    if not isinstance(data.index, pd.DatetimeIndex):
+        print(f"Data for {interval} does not have a datetime index.")
+        return
+
+    # Filter recent data
+    try:
+        end_date = data.index.max()
+        start_date = end_date - timedelta(days=lookback_days)
+        data = data.loc[start_date:end_date]
+        if data.empty:
+            print(f"No data available for {interval} in the last {lookback_days} days.")
+            return
+        print(f"Filtered data for {interval}: {len(data)} rows from {data.index.min()} to {data.index.max()}")
+    except Exception as e:
+        print(f"Error filtering recent data for {interval}: {str(e)}")
+        return
+
+    # Define features for multivariate models
+    features = ['Open', 'High', 'Low', 'Close', 'Volume',
+                'Quote asset volume', 'Number of trades',
+                'Taker buy base asset volume', 'Taker buy quote asset volume']
+
+    # Check for missing features
+    available_features = [f for f in features if f in data.columns]
+    if not available_features:
+        print(f"No valid features available for {interval}. Required: {features}")
+        return
+    if target_column not in data.columns:
+        print(f"Target column {target_column} not found in data for {interval}.")
+        return
+
+    # Ensure stationarity for VAR and VARMA
+    try:
+        stationary_data, diff_orders = ensure_stationarity_multivariate(data[available_features], available_features)
+        joblib.dump(diff_orders, os.path.join(model_dir, f"diff_orders_{interval}.pkl"))
+    except Exception as e:
+        print(f"Error ensuring stationarity for {interval}: {str(e)}")
+        return
+
+    # Split the data
+    train_size = int(len(stationary_data) * 0.9)
+    if train_size < 50:  # Ensure enough data for training
+        print(f"Insufficient training data for {interval}: {train_size} rows. Need at least 50.")
+        return
+    train, test = stationary_data[:train_size], stationary_data[train_size:]
     print(f"Training data size: {len(train)}, Test data size: {len(test)}")
 
     # Train ARIMA
     try:
-        # Optimize grid search for larger dataset
-        p_values = range(0, 3)  # Reduced range to speed up training
-        d_values = range(0, 2)
-        q_values = range(0, 3)
+        p_values = range(0, 5)
+        d_values = range(0, 4)
+        q_values = range(0, 5)
 
         def evaluate_arima_model(train, test, arima_order):
             try:
@@ -74,19 +97,23 @@ def train_and_save_models(symbol="BTC-USD", period="2y", interval="1d", target_c
         for p, d, q in product(p_values, d_values, q_values):
             arima_order = (p, d, q)
             mse, model_fit = evaluate_arima_model(train[target_column], test[target_column], arima_order)
-            results.append((arima_order, mse, model_fit))
+            if model_fit is not None:
+                results.append((arima_order, mse, model_fit))
 
-        best_order, best_mse, best_model = min(results, key=lambda x: x[1])
-        joblib.dump(best_model, os.path.join(model_dir, "arima_model.pkl"))
-        print(f"\nARIMA model trained and saved successfully. Best order: {best_order}, Test MSE: {best_mse}\n")
+        if results:
+            best_order, best_mse, best_model = min(results, key=lambda x: x[1])
+            joblib.dump(best_model, os.path.join(model_dir, f"arima_model_{interval}.pkl"))
+            print(f"ARIMA model trained for {interval}. Best order: {best_order}, Test MSE: {best_mse}")
+        else:
+            print(f"No valid ARIMA models trained for {interval}.")
     except Exception as e:
-        print(f"Error training ARIMA model: {str(e)}")
+        print(f"Error training ARIMA model for {interval}: {str(e)}")
 
     # Train SARIMA
     try:
-        seasonal_period = 7  # Weekly seasonality
+        seasonal_period = {'15m': 96, '1h': 24, '4h': 6, '1d': 7}[interval]
         results = []
-        for p, d, q in product(range(0, 2), range(0, 2), range(0, 2)):  # Reduced range for efficiency
+        for p, d, q in product(range(0, 3), range(0, 3), range(0, 3)):
             order = (p, d, q)
             seasonal_order = (p, d, q, seasonal_period)
             try:
@@ -98,62 +125,105 @@ def train_and_save_models(symbol="BTC-USD", period="2y", interval="1d", target_c
             except:
                 continue
 
-        best_order, best_mse, best_model = min(results, key=lambda x: x[1])
-        joblib.dump(best_model, os.path.join(model_dir, "sarima_model.pkl"))
-        print(f"\nSARIMA model trained and saved successfully. Best order: {best_order}, Test MSE: {best_mse}\n")
+        if results:
+            best_order, best_mse, best_model = min(results, key=lambda x: x[1])
+            joblib.dump(best_model, os.path.join(model_dir, f"sarima_model_{interval}.pkl"))
+            print(f"SARIMA model trained for {interval}. Best order: {best_order}, Test MSE: {best_mse}")
+        else:
+            print(f"No valid SARIMA models trained for {interval}.")
     except Exception as e:
-        print(f"Error training SARIMA model: {str(e)}")
+        print(f"Error training SARIMA model for {interval}: {str(e)}")
 
-    # Train GARCH (mean model for price prediction)
+    # Train VAR
     try:
-        returns = train[target_column].pct_change().dropna() * 100
-        mean_model = ARIMA(returns, order=(1, 0, 0)).fit()
-        joblib.dump(mean_model, os.path.join(model_dir, "garch_mean_model.pkl"))
-        print("\nGARCH mean model trained and saved successfully.\n")
+        max_lags = min(5, len(train) // 10, len(train) - 1)  # Ensure lags don't exceed data size
+        if max_lags < 1:
+            print(f"Insufficient data for VAR in {interval}: max_lags={max_lags}")
+        else:
+            model = VAR(train[available_features])
+            results = model.fit(maxlags=max_lags, ic='aic')
+            predictions = results.forecast(train[available_features].values[-results.k_ar:], steps=len(test))
+            mse = mean_squared_error(test[target_column], predictions[:, available_features.index(target_column)])
+            joblib.dump(results, os.path.join(model_dir, f"var_model_{interval}.pkl"))
+            print(f"VAR model trained for {interval}. Best lag: {results.k_ar}, Test MSE: {mse}")
     except Exception as e:
-        print(f"Error training GARCH mean model: {str(e)}")
+        print(f"Error training VAR model for {interval}: {str(e)}")
+
+    # Train VARMA
+    try:
+        p_values = range(0, 3)
+        q_values = range(0, 3)
+        results = []
+        for p, q in product(p_values, q_values):
+            try:
+                model = VARMAX(train[available_features], order=(p, q))
+                model_fit = model.fit(disp=False)
+                predictions = model_fit.forecast(steps=len(test))
+                mse = mean_squared_error(test[target_column], predictions[target_column])
+                results.append(((p, q), mse, model_fit))
+            except:
+                continue
+        
+        if results:
+            best_order, best_mse, best_model = min(results, key=lambda x: x[1])
+            joblib.dump(best_model, os.path.join(model_dir, f"varma_model_{interval}.pkl"))
+            print(f"VARMA model trained for {interval}. Best order: {best_order}, Test MSE: {best_mse}")
+        else:
+            print(f"No valid VARMA models trained for {interval}.")
+    except Exception as e:
+        print(f"Error training VARMA model for {interval}: {str(e)}")
+
+    # Train GARCH using arch
+    try:
+        returns = data[target_column].pct_change().dropna() * 100
+        train_returns = returns[:train_size]
+        test_returns = returns[train_size:train_size + len(test)]
+        model = arch_model(train_returns, vol='Garch', p=1, q=1, mean='AR', lags=1)
+        model_fit = model.fit(disp='off')
+        forecasts = model_fit.forecast(horizon=len(test))
+        predicted_returns = forecasts.mean.values[-1, :]
+        mse = mean_squared_error(test_returns[-len(predicted_returns):], predicted_returns)
+        joblib.dump(model_fit, os.path.join(model_dir, f"garch_model_{interval}.pkl"))
+        print(f"GARCH model trained for {interval}. Test MSE: {mse}")
+    except Exception as e:
+        print(f"Error training GARCH model for {interval}: {str(e)}")
 
     # Train LSTM
     try:
         scaler = MinMaxScaler(feature_range=(0, 1))
-        scaled_data = scaler.fit_transform(data[[target_column]])
+        scaled_data = scaler.fit_transform(data[available_features])
         train_data = scaled_data[:train_size]
-        time_step = 30  # Reduced from 60 to create more training samples
-        X_train, y_train = [], []
-        for i in range(len(train_data) - time_step):
-            X_train.append(train_data[i:(i + time_step), 0])
-            y_train.append(train_data[i + time_step, 0])
-        X_train, y_train = np.array(X_train), np.array(y_train)
-        X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
+        time_step = min({'15m': 96, '1h': 24, '4h': 6, '1d': 30}[interval], len(train_data) - 1)
+        if time_step < 10:
+            print(f"Insufficient data for LSTM in {interval}: time_step={time_step}")
+        else:
+            X_train, y_train = [], []
+            for i in range(len(train_data) - time_step):
+                X_train.append(train_data[i:(i + time_step), :])
+                y_train.append(train_data[i + time_step, available_features.index(target_column)])
+            X_train, y_train = np.array(X_train), np.array(y_train)
 
-        model = Sequential()
-        model.add(LSTM(50, return_sequences=True, input_shape=(time_step, 1)))
-        model.add(LSTM(50, return_sequences=False))
-        model.add(Dense(25))
-        model.add(Dense(1))
-        model.compile(optimizer='adam', loss='mean_squared_error')
-        model.fit(X_train, y_train, batch_size=32, epochs=10, verbose=1)  # Increased batch_size and epochs
-        model.save(os.path.join(model_dir, "lstm_model.h5"))
-        print(f"\nLSTM model trained and saved successfully. Training samples: {X_train.shape[0]}\n")
+            model = Sequential()
+            model.add(LSTM(50, return_sequences=True, input_shape=(time_step, len(available_features))))
+            model.add(LSTM(50, return_sequences=False))
+            model.add(Dense(25))
+            model.add(Dense(1))
+            model.compile(optimizer='adam', loss='mean_squared_error')
+            model.fit(X_train, y_train, batch_size=32, epochs=10, verbose=1)
+            joblib.dump(scaler, os.path.join(model_dir, f"lstm_scaler_{interval}.pkl"))
+            model.save(os.path.join(model_dir, f"lstm_model_{interval}.h5"))
+            print(f"LSTM model trained for {interval}. Training samples: {X_train.shape[0]}")
     except Exception as e:
-        print(f"Error training LSTM model: {str(e)}")
-
-    # Transformer model (commented out as per user preference)
-    # try:
-    #     X_train, y_train = [], []
-    #     for i in range(len(train_data) - time_step):
-    #         X_train.append(train_data[i:(i + time_step), 0])
-    #         y_train.append(train_data[i + time_step, 0])
-    #     X_train, y_train = np.array(X_train), np.array(y_train)
-    #     X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
-
-    #     model = build_transformer_model(time_step=time_step, features=1)
-    #     model.compile(optimizer='adam', loss='mean_squared_error')
-    #     model.fit(X_train, y_train, batch_size=32, epochs=10, verbose=1)
-    #     model.save(os.path.join(model_dir, "transformer_model.h5"))
-    #     print("\nTransformer model trained and saved successfully.\n")
-    # except Exception as e:
-    #     print(f"Error training Transformer model: {str(e)}")
+        print(f"Error training LSTM model for {interval}: {str(e)}")
 
 if __name__ == "__main__":
-    train_and_save_models()
+    csv_files = {
+        # "15m": "data/btc_15m_data_2018_to_2025.csv",
+        # "1h": "data/btc_1h_data_2018_to_2025.csv",
+        # "4h": "data/btc_4h_data_2018_to_2025.csv",
+        "1d": "data/btc_1d_data_2018_to_2025.csv"
+    }
+    lookback_days = 1000
+    for interval, file_path in csv_files.items():
+        print(f"\nTraining models for interval: {interval}")
+        train_and_save_models(file_path, interval, lookback_days=lookback_days)

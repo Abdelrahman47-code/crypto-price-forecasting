@@ -1,43 +1,51 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
-from utils.data_utils import get_yfinance_data, calculate_metrics
+import plotly.express as px
+from backend.data_utils import get_local_data, calculate_metrics
 from backend.predictor import Predictor
+from datetime import timedelta
 
-def sarima_forecast_tab(crypto_symbol, period, interval, target_column, prediction_ahead):
-    st.header("SARIMA Forecasting Model")
-    predictor = Predictor()
-    predictor.load_models()
+def sarima_forecast_tab(file_path, interval, target_column, prediction_ahead, lookback_days):
+    st.header(f"SARIMA Forecast ({interval})")
+    
+    try:
+        # Load data
+        data = get_local_data(file_path, interval)
+        if data is None or data.empty:
+            st.error("Failed to load data.")
+            return
 
-    if st.button("Predict with SARIMA"):
-        with st.spinner("Making SARIMA predictions..."):
-            btc_data = get_yfinance_data(crypto_symbol, period, interval)
-            if btc_data is not None:
-                train_size = int(len(btc_data) * 0.8)
-                train, test = btc_data[:train_size], btc_data[train_size:]
+        # Filter by lookback period
+        end_date = data.index.max()
+        start_date = end_date - timedelta(days=lookback_days)
+        data = data.loc[start_date:end_date]
 
+        # Initialize predictor with interval
+        predictor = Predictor(interval=interval)
+        predictor.load_models()
+
+        if st.button("Predict with SARIMA"):
+            with st.spinner("Making SARIMA predictions..."):
+                # Get predictions
                 forecast = predictor.get_predictions(
-                    symbol=crypto_symbol,
-                    period=period,
+                    file_path=file_path,
                     interval=interval,
                     target_column=target_column,
-                    steps=len(test) + prediction_ahead,
+                    steps=prediction_ahead,
                     model_type="sarima"
                 )
 
-                test_predictions = forecast[:len(test)]
-                mse, mae, rmse = calculate_metrics(test[target_column], test_predictions)
-                st.subheader("Model Metrics")
-                st.write(f"MSE: {mse:.2f}, MAE: {mae:.2f}, RMSE: {rmse:.2f}")
+                # Create future index
+                last_date = data.index[-1]
+                freq = {'15m': '15min', '1h': 'H', '4h': '4H', '1d': 'D'}[interval]
+                future_index = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=prediction_ahead, freq=freq)
 
-                st.session_state['model_results']['SARIMA'] = {
-                    'forecast': forecast,
-                    'metrics': {'mse': mse, 'mae': mae, 'rmse': rmse},
-                    'test_index': test.index,
-                    'future_index': pd.date_range(start=test.index[-1], periods=prediction_ahead + 1, freq='D')[1:]
-                }
+                # Store results in session state
+                st.session_state['model_results']['SARIMA']['forecast'] = forecast
+                st.session_state['model_results']['SARIMA']['future_index'] = future_index
 
-                latest_price = float(btc_data[target_column].iloc[-1])
+                # Display latest and predicted prices
+                latest_price = float(data[target_column].iloc[-1])
                 last_predicted_price = float(forecast[-1])
 
                 col1, col2, col3 = st.columns([1, 2, 1])
@@ -58,16 +66,44 @@ def sarima_forecast_tab(crypto_symbol, period, interval, target_column, predicti
                         unsafe_allow_html=True,
                     )
 
-                plt.figure(figsize=(14, 5))
-                plt.plot(btc_data.index, btc_data[target_column], label='Actual', color='blue')
-                plt.axvline(x=btc_data.index[train_size], color='gray', linestyle='--', label='Train/Test Split')
-                plt.plot(train.index, train[target_column], label='Train Data', color='green')
-                plt.plot(test.index, forecast[:len(test)], label='Test Predictions', color='orange')
-                future_index = pd.date_range(start=test.index[-1], periods=prediction_ahead + 1, freq='D')[1:]
-                plt.plot(future_index, forecast[len(test):], label=f'{prediction_ahead}-Day Forecast', color='red')
-                plt.title(f'{crypto_symbol} SARIMA Model Predictions ({target_column})')
-                plt.xlabel('Date')
-                plt.ylabel(target_column)
-                plt.legend()
-                plt.grid(True)
-                st.pyplot(plt)
+                # Plot historical data and forecast
+                historical_df = data[[target_column]].reset_index().rename(columns={'Open time': 'Date', target_column: 'Price'})
+                forecast_df = pd.DataFrame({
+                    'Date': future_index,
+                    'Price': forecast
+                })
+                combined_df = pd.concat([
+                    historical_df.assign(Type='Historical'),
+                    forecast_df.assign(Type='Forecast')
+                ])
+
+                fig = px.line(combined_df, x='Date', y='Price', color='Type', title=f'SARIMA Forecast for {target_column} ({interval})')
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Display metrics
+                test_size = int(len(data) * 0.1)
+                if test_size > 0:
+                    test_data = data[-test_size:][target_column]
+                    test_forecast = predictor.get_predictions(
+                        file_path=file_path,
+                        interval=interval,
+                        target_column=target_column,
+                        steps=test_size,
+                        model_type="sarima"
+                    )
+                    mse, mae, rmse = calculate_metrics(test_data, test_forecast[:len(test_data)])
+                    st.subheader("Model Performance Metrics")
+                    st.write(f"Mean Squared Error (MSE): {mse:.2f}")
+                    st.write(f"Mean Absolute Error (MAE): {mae:.2f}")
+                    st.write(f"Root Mean Squared Error (RMSE): {rmse:.2f}")
+
+                # Download forecast
+                forecast_df = pd.DataFrame({
+                    'Date': future_index,
+                    'Forecast': forecast
+                })
+                csv = forecast_df.to_csv(index=False)
+                st.download_button("Download Forecast", csv, f"sarima_forecast_{interval}.csv", "text/csv")
+
+    except Exception as e:
+        st.error(f"Error generating SARIMA forecast for {interval}: {str(e)}")

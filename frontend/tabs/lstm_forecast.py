@@ -1,25 +1,35 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from utils.data_utils import get_yfinance_data, calculate_metrics
+import plotly.express as px
+from backend.data_utils import get_local_data, calculate_metrics
 from backend.predictor import Predictor
+from datetime import timedelta
 
-def lstm_forecast_tab(crypto_symbol, period, interval, target_column, prediction_ahead):
-    st.header("LSTM Forecasting Model")
-    predictor = Predictor()
-    predictor.load_models()
+def lstm_forecast_tab(file_path, interval, target_column, prediction_ahead, lookback_days):
+    st.header(f"LSTM Forecast ({interval})")
+    
+    try:
+        # Load data
+        data = get_local_data(file_path, interval)
+        if data is None or data.empty:
+            st.error("Failed to load data.")
+            return
 
-    if st.button("Predict with LSTM"):
-        with st.spinner("Making LSTM predictions..."):
-            btc_data = get_yfinance_data(crypto_symbol, period, interval)
-            if btc_data is not None:
-                train_size = int(len(btc_data) * 0.8)
-                time_step = 60
+        # Filter by lookback period
+        end_date = data.index.max()
+        start_date = end_date - timedelta(days=lookback_days)
+        data = data.loc[start_date:end_date]
 
+        # Initialize predictor with interval
+        predictor = Predictor(interval=interval)
+        predictor.load_models()
+
+        if st.button("Predict with LSTM"):
+            with st.spinner("Making LSTM predictions..."):
+                # Get predictions
+                time_step = {'15m': 96, '1h': 24, '4h': 6, '1d': 30}[interval]
                 forecast = predictor.get_predictions(
-                    symbol=crypto_symbol,
-                    period=period,
+                    file_path=file_path,
                     interval=interval,
                     target_column=target_column,
                     steps=prediction_ahead,
@@ -27,23 +37,17 @@ def lstm_forecast_tab(crypto_symbol, period, interval, target_column, prediction
                     time_step=time_step
                 )
 
-                # Since predictor only gives future forecast, we need test predictions separately
-                test_data = btc_data[train_size - time_step:]
-                test_forecast = predictor.predict_lstm(test_data, target_column, len(test_data) - time_step, time_step)
-                full_forecast = np.concatenate([test_forecast, forecast])
+                # Create future index
+                last_date = data.index[-1]
+                freq = {'15m': '15min', '1h': 'H', '4h': '4H', '1d': 'D'}[interval]
+                future_index = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=prediction_ahead, freq=freq)
 
-                mse, mae, rmse = calculate_metrics(test_data[target_column].values[time_step:], test_forecast)
-                st.subheader("Model Metrics")
-                st.write(f"MSE: {mse:.2f}, MAE: {mae:.2f}, RMSE: {rmse:.2f}")
+                # Store results in session state
+                st.session_state['model_results']['LSTM']['forecast'] = forecast
+                st.session_state['model_results']['LSTM']['future_index'] = future_index
 
-                st.session_state['model_results']['LSTM'] = {
-                    'forecast': full_forecast,
-                    'metrics': {'mse': mse, 'mae': mae, 'rmse': rmse},
-                    'test_index': btc_data.index[train_size:train_size + len(test_forecast)],
-                    'future_index': pd.date_range(start=btc_data.index[-1], periods=prediction_ahead + 1, freq='D')[1:]
-                }
-
-                last_price = float(btc_data[target_column].iloc[-1])
+                # Display latest and predicted prices
+                latest_price = float(data[target_column].iloc[-1])
                 last_predicted_price = float(forecast[-1])
 
                 col1, col2, col3 = st.columns([1, 2, 1])
@@ -53,7 +57,7 @@ def lstm_forecast_tab(crypto_symbol, period, interval, target_column, prediction
                         <div style="display: flex; justify-content: space-around;">
                             <div class="stCard greenCard">
                                 <h3>Latest {target_column}</h3>
-                                <p style="font-size: 20px;">${last_price:,.2f}</p>
+                                <p style="font-size: 20px;">${latest_price:,.2f}</p>
                             </div>
                             <div class="stCard greenCard">
                                 <h3>{target_column} After {prediction_ahead} Days</h3>
@@ -64,16 +68,45 @@ def lstm_forecast_tab(crypto_symbol, period, interval, target_column, prediction
                         unsafe_allow_html=True,
                     )
 
-                plt.figure(figsize=(14, 5))
-                plt.plot(btc_data.index, btc_data[target_column], label='Actual', color='blue')
-                plt.axvline(x=btc_data.index[train_size], color='gray', linestyle='--', label='Train/Test Split')
-                test_range = btc_data.index[train_size:train_size + len(test_forecast)]
-                plt.plot(test_range, test_forecast, label='Test Predictions', color='orange')
-                future_index = pd.date_range(start=btc_data.index[-1], periods=prediction_ahead + 1, freq='D')[1:]
-                plt.plot(future_index, forecast, label=f'{prediction_ahead}-Day Forecast', color='red')
-                plt.title(f'{crypto_symbol} LSTM Model Predictions ({target_column})')
-                plt.xlabel('Date')
-                plt.ylabel(target_column)
-                plt.legend()
-                plt.grid(True)
-                st.pyplot(plt)
+                # Plot historical data and forecast
+                historical_df = data[[target_column]].reset_index().rename(columns={'Open time': 'Date', target_column: 'Price'})
+                forecast_df = pd.DataFrame({
+                    'Date': future_index,
+                    'Price': forecast
+                })
+                combined_df = pd.concat([
+                    historical_df.assign(Type='Historical'),
+                    forecast_df.assign(Type='Forecast')
+                ])
+
+                fig = px.line(combined_df, x='Date', y='Price', color='Type', title=f'LSTM Forecast for {target_column} ({interval})')
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Display metrics
+                test_size = int(len(data) * 0.1)
+                if test_size > 0:
+                    test_data = data[-test_size:][target_column]
+                    test_forecast = predictor.get_predictions(
+                        file_path=file_path,
+                        interval=interval,
+                        target_column=target_column,
+                        steps=test_size,
+                        model_type="lstm",
+                        time_step=time_step
+                    )
+                    mse, mae, rmse = calculate_metrics(test_data, test_forecast[:len(test_data)])
+                    st.subheader("Model Performance Metrics")
+                    st.write(f"Mean Squared Error (MSE): {mse:.2f}")
+                    st.write(f"Mean Absolute Error (MAE): {mae:.2f}")
+                    st.write(f"Root Mean Squared Error (RMSE): {rmse:.2f}")
+
+                # Download forecast
+                forecast_df = pd.DataFrame({
+                    'Date': future_index,
+                    'Forecast': forecast
+                })
+                csv = forecast_df.to_csv(index=False)
+                st.download_button("Download Forecast", csv, f"lstm_forecast_{interval}.csv", "text/csv")
+
+    except Exception as e:
+        st.error(f"Error generating LSTM forecast for {interval}: {str(e)}")

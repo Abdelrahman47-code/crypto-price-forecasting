@@ -1,45 +1,52 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
-from utils.data_utils import get_yfinance_data, calculate_metrics
+import plotly.express as px
+from backend.data_utils import get_local_data, calculate_metrics
 from backend.predictor import Predictor
+from datetime import timedelta
 
-def garch_forecast_tab(crypto_symbol, period, interval, target_column, prediction_ahead):
-    st.header("GARCH Forecasting Model")
-    predictor = Predictor()
-    predictor.load_models()
+def garch_forecast_tab(file_path, interval, target_column, prediction_ahead, lookback_days):
+    st.header(f"GARCH Forecast ({interval})")
+    
+    try:
+        # Load data
+        data = get_local_data(file_path, interval)
+        if data is None or data.empty:
+            st.error("Failed to load data.")
+            return
 
-    if st.button("Predict with GARCH"):
-        with st.spinner("Making GARCH predictions..."):
-            btc_data = get_yfinance_data(crypto_symbol, period, interval)
-            if btc_data is not None:
-                returns = btc_data[target_column].pct_change().dropna() * 100
-                train_size = int(len(returns) * 0.8)
-                train, test = returns[:train_size], returns[train_size:]
+        # Filter by lookback period
+        end_date = data.index.max()
+        start_date = end_date - timedelta(days=lookback_days)
+        data = data.loc[start_date:end_date]
 
-                price_forecast = predictor.get_predictions(
-                    symbol=crypto_symbol,
-                    period=period,
+        # Initialize predictor with interval
+        predictor = Predictor(interval=interval)
+        predictor.load_models()
+
+        if st.button("Predict with GARCH"):
+            with st.spinner("Making GARCH predictions..."):
+                # Get predictions
+                forecast = predictor.get_predictions(
+                    file_path=file_path,
                     interval=interval,
                     target_column=target_column,
-                    steps=len(test) + prediction_ahead,
+                    steps=prediction_ahead,
                     model_type="garch"
                 )
 
-                test_predictions = price_forecast[:len(test)]
-                mse, mae, rmse = calculate_metrics(test, test_predictions)
-                st.subheader("Model Metrics")
-                st.write(f"MSE: {mse:.2f}, MAE: {mae:.2f}, RMSE: {rmse:.2f}")
+                # Create future index
+                last_date = data.index[-1]
+                freq = {'15m': '15min', '1h': 'H', '4h': '4H', '1d': 'D'}[interval]
+                future_index = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=prediction_ahead, freq=freq)
 
-                st.session_state['model_results']['GARCH'] = {
-                    'forecast': price_forecast,
-                    'metrics': {'mse': mse, 'mae': mae, 'rmse': rmse},
-                    'test_index': test.index,
-                    'future_index': pd.date_range(start=test.index[-1], periods=prediction_ahead + 1, freq='D')[1:]
-                }
+                # Store results in session state
+                st.session_state['model_results']['GARCH']['forecast'] = forecast
+                st.session_state['model_results']['GARCH']['future_index'] = future_index
 
-                latest_price = float(btc_data[target_column].iloc[-1])
-                last_predicted_price = float(price_forecast[-1])
+                # Display latest and predicted prices
+                latest_price = float(data[target_column].iloc[-1])
+                last_predicted_price = float(forecast[-1])
 
                 col1, col2, col3 = st.columns([1, 2, 1])
                 with col2:
@@ -59,14 +66,44 @@ def garch_forecast_tab(crypto_symbol, period, interval, target_column, predictio
                         unsafe_allow_html=True,
                     )
 
-                plt.figure(figsize=(14, 5))
-                plt.plot(returns.index, returns, label='Returns', color='blue')
-                plt.axvline(x=returns.index[train_size], color='gray', linestyle='--', label='Train/Test Split')
-                future_index = pd.date_range(start=returns.index[-1], periods=prediction_ahead + 1, freq='D')[1:]
-                plt.plot(future_index, price_forecast[len(test):], label='Volatility Forecast', color='red')
-                plt.title(f'{crypto_symbol} GARCH Volatility Forecast')
-                plt.xlabel('Date')
-                plt.ylabel('Volatility (%)')
-                plt.legend()
-                plt.grid(True)
-                st.pyplot(plt)
+                # Plot historical data and forecast
+                historical_df = data[[target_column]].reset_index().rename(columns={'Open time': 'Date', target_column: 'Price'})
+                forecast_df = pd.DataFrame({
+                    'Date': future_index,
+                    'Price': forecast
+                })
+                combined_df = pd.concat([
+                    historical_df.assign(Type='Historical'),
+                    forecast_df.assign(Type='Forecast')
+                ])
+
+                fig = px.line(combined_df, x='Date', y='Price', color='Type', title=f'GARCH Forecast for {target_column} ({interval})')
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Display metrics
+                test_size = int(len(data) * 0.1)
+                if test_size > 0:
+                    test_data = data[-test_size:][target_column]
+                    test_forecast = predictor.get_predictions(
+                        file_path=file_path,
+                        interval=interval,
+                        target_column=target_column,
+                        steps=test_size,
+                        model_type="garch"
+                    )
+                    mse, mae, rmse = calculate_metrics(test_data, test_forecast[:len(test_data)])
+                    st.subheader("Model Performance Metrics")
+                    st.write(f"Mean Squared Error (MSE): {mse:.2f}")
+                    st.write(f"Mean Absolute Error (MAE): {mae:.2f}")
+                    st.write(f"Root Mean Squared Error (RMSE): {rmse:.2f}")
+
+                # Download forecast
+                forecast_df = pd.DataFrame({
+                    'Date': future_index,
+                    'Forecast': forecast
+                })
+                csv = forecast_df.to_csv(index=False)
+                st.download_button("Download Forecast", csv, f"garch_forecast_{interval}.csv", "text/csv")
+
+    except Exception as e:
+        st.error(f"Error generating GARCH forecast for {interval}: {str(e)}")

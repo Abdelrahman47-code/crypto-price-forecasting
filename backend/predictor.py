@@ -1,112 +1,105 @@
-import pandas as pd
 import numpy as np
-import yfinance as yf
-from statsmodels.tsa.arima.model import ARIMA
 from tensorflow.keras.models import load_model
-from tensorflow.keras.layers import Dense, Dropout, LayerNormalization, MultiHeadAttention
 import joblib
 import os
+from backend.data_utils import get_local_data, ensure_stationarity_multivariate
 
 class Predictor:
-    def __init__(self, model_dir="backend/models"):
-        self.model_dir = model_dir
+    def __init__(self, interval, model_dir="backend/models"):
+        self.interval = interval
+        self.model_dir = os.path.join(model_dir, interval)
         self.arima_model = None
         self.lstm_model = None
-        self.transformer_model = None
         self.sarima_model = None
-        self.garch_mean_model = None
+        self.garch_model = None
+        self.var_model = None
+        self.varma_model = None
+        self.lstm_scaler = None
+        self.diff_orders = None
         self.loaded_models = set()
 
-    def transformer_encoder(self, inputs, head_size, num_heads, ff_dim, dropout=0):
-        """Define the transformer encoder layer for custom object loading."""
-        x = MultiHeadAttention(key_dim=head_size, num_heads=num_heads, dropout=dropout)(inputs, inputs)
-        x = Dropout(dropout)(x)
-        x = LayerNormalization(epsilon=1e-6)(x + inputs)
-        x_ff = Dense(ff_dim, activation="relu")(x)
-        x_ff = Dense(inputs.shape[-1])(x_ff)
-        x_ff = Dropout(dropout)(x_ff)
-        x = LayerNormalization(epsilon=1e-6)(x + x_ff)
-        return x
-
     def load_models(self):
-        """Load pre-trained models from the models directory."""
         errors = []
 
         # Load ARIMA model
-        arima_path = os.path.join(self.model_dir, "arima_model.pkl")
+        arima_path = os.path.join(self.model_dir, f"arima_model_{self.interval}.pkl")
         if os.path.exists(arima_path):
             try:
                 self.arima_model = joblib.load(arima_path)
                 self.loaded_models.add("arima")
             except Exception as e:
-                errors.append(f"Failed to load ARIMA model: {str(e)}")
-        else:
-            errors.append(f"ARIMA model file not found at {arima_path}")
+                errors.append(f"Failed to load ARIMA model for {self.interval}: {str(e)}")
 
         # Load SARIMA model
-        sarima_path = os.path.join(self.model_dir, "sarima_model.pkl")
+        sarima_path = os.path.join(self.model_dir, f"sarima_model_{self.interval}.pkl")
         if os.path.exists(sarima_path):
             try:
                 self.sarima_model = joblib.load(sarima_path)
                 self.loaded_models.add("sarima")
             except Exception as e:
-                errors.append(f"Failed to load SARIMA model: {str(e)}")
-        else:
-            errors.append(f"SARIMA model file not found at {sarima_path}")
+                errors.append(f"Failed to load SARIMA model for {self.interval}: {str(e)}")
 
-        # Load GARCH mean model
-        garch_mean_path = os.path.join(self.model_dir, "garch_mean_model.pkl")
-        if os.path.exists(garch_mean_path):
+        # Load VAR model
+        var_path = os.path.join(self.model_dir, f"var_model_{self.interval}.pkl")
+        if os.path.exists(var_path):
             try:
-                self.garch_mean_model = joblib.load(garch_mean_path)
+                self.var_model = joblib.load(var_path)
+                self.loaded_models.add("var")
+            except Exception as e:
+                errors.append(f"Failed to load VAR model for {self.interval}: {str(e)}")
+
+        # Load VARMA model
+        varma_path = os.path.join(self.model_dir, f"varma_model_{self.interval}.pkl")
+        if os.path.exists(varma_path):
+            try:
+                self.varma_model = joblib.load(varma_path)
+                self.loaded_models.add("varma")
+            except Exception as e:
+                errors.append(f"Failed to load VARMA model for {self.interval}: {str(e)}")
+
+        # Load differencing orders
+        diff_orders_path = os.path.join(self.model_dir, f"diff_orders_{self.interval}.pkl")
+        if os.path.exists(diff_orders_path):
+            try:
+                self.diff_orders = joblib.load(diff_orders_path)
+            except Exception as e:
+                errors.append(f"Failed to load differencing orders for {self.interval}: {str(e)}")
+
+        # Load GARCH model
+        garch_path = os.path.join(self.model_dir, f"garch_model_{self.interval}.pkl")
+        if os.path.exists(garch_path):
+            try:
+                self.garch_model = joblib.load(garch_path)
                 self.loaded_models.add("garch")
             except Exception as e:
-                errors.append(f"Failed to load GARCH mean model: {str(e)}")
-        else:
-            errors.append(f"GARCH mean model file not found at {garch_mean_path}")
+                errors.append(f"Failed to load GARCH model for {self.interval}: {str(e)}")
 
-        # Load LSTM model
-        lstm_path = os.path.join(self.model_dir, "lstm_model.h5")
-        if os.path.exists(lstm_path):
+        # Load LSTM model and scaler
+        lstm_path = os.path.join(self.model_dir, f"lstm_model_{self.interval}.h5")
+        lstm_scaler_path = os.path.join(self.model_dir, f"lstm_scaler_{self.interval}.pkl")
+        if os.path.exists(lstm_path) and os.path.exists(lstm_scaler_path):
             try:
                 self.lstm_model = load_model(lstm_path)
+                self.lstm_scaler = joblib.load(lstm_scaler_path)
                 self.loaded_models.add("lstm")
             except Exception as e:
-                errors.append(f"Failed to load LSTM model: {str(e)}")
-        else:
-            errors.append(f"LSTM model file not found at {lstm_path}")
-
-        # # Load Transformer model with custom objects
-        # transformer_path = os.path.join(self.model_dir, "transformer_model.h5")
-        # if os.path.exists(transformer_path):
-        #     try:
-        #         # Define custom objects for the Transformer model
-        #         custom_objects = {
-        #             'MultiHeadAttention': MultiHeadAttention,
-        #             'LayerNormalization': LayerNormalization
-        #         }
-        #         self.transformer_model = load_model(transformer_path, custom_objects=custom_objects)
-        #         self.loaded_models.add("transformer")
-        #     except Exception as e:
-        #         errors.append(f"Failed to load Transformer model: {str(e)}")
-        # else:
-        #     errors.append(f"Transformer model file not found at {transformer_path}")
+                errors.append(f"Failed to load LSTM model or scaler for {self.interval}: {str(e)}")
 
         if errors:
             raise Exception("\n".join(errors))
         if not self.loaded_models:
-            raise Exception("No models were loaded successfully.")
+            raise Exception(f"No models were loaded successfully for {self.interval}. Please ensure models are trained for this interval.")
 
-    def fetch_data(self, symbol, period, interval):
-        """Fetch data using yfinance."""
+    def fetch_data(self, file_path, interval):
         try:
-            data = yf.download(symbol, period=period, interval=interval)
-            return data[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+            data = get_local_data(file_path, interval)
+            if data is None or data.empty:
+                raise ValueError("No data loaded from CSV.")
+            return data
         except Exception as e:
-            raise Exception(f"Error fetching data: {str(e)}")
+            raise Exception(f"Error loading data: {str(e)}")
 
     def predict_arima(self, data, target_column, steps):
-        """Make predictions using the ARIMA model."""
         if self.arima_model is None:
             raise ValueError("ARIMA model not loaded.")
         history = data[target_column].values
@@ -114,71 +107,115 @@ class Predictor:
         return forecast
 
     def predict_sarima(self, data, target_column, steps):
-        """Make predictions using the SARIMA model."""
         if self.sarima_model is None:
             raise ValueError("SARIMA model not loaded.")
         history = data[target_column].values
         forecast = self.sarima_model.forecast(steps=steps)
         return forecast
 
-    def predict_garch(self, data, target_column, steps):
-        """Make predictions using the GARCH model (mean model for price)."""
-        if self.garch_mean_model is None:
-            raise ValueError("GARCH mean model not loaded.")
-        returns = data[target_column].pct_change().dropna() * 100
-        forecast = self.garch_mean_model.forecast(steps=steps)
+    def predict_var(self, data, target_column, steps):
+        if self.var_model is None or self.diff_orders is None:
+            raise ValueError("VAR model or differencing orders not loaded.")
+        features = ['Open', 'High', 'Low', 'Close', 'Volume',
+                    'Quote asset volume', 'Number of trades',
+                    'Taker buy base asset volume', 'Taker buy quote asset volume']
+        available_features = [f for f in features if f in data.columns]
+        if target_column not in available_features:
+            raise ValueError(f"Target column {target_column} not in available features: {available_features}")
+        
+        # Ensure stationarity
+        stationary_data, _ = ensure_stationarity_multivariate(data[available_features], available_features)
+        if len(stationary_data) < self.var_model.k_ar:
+            raise ValueError(f"Insufficient data for VAR forecasting. Need at least {self.var_model.k_ar} rows, got {len(stationary_data)}.")
+        
+        # Generate forecast
+        forecast = self.var_model.forecast(stationary_data[available_features].values[-self.var_model.k_ar:], steps=steps)
+        target_idx = available_features.index(target_column)
+        forecast = forecast[:, target_idx]
+        
+        # Reverse differencing if needed
+        if self.diff_orders[target_column] > 0:
+            last_value = data[target_column].iloc[-1]
+            diff_order = self.diff_orders[target_column]
+            # Integrate the differenced forecast
+            forecast = np.cumsum(forecast) + last_value
+            # Trim to steps if necessary
+            forecast = forecast[:steps]
+        
+        print(f"VAR forecast for {self.interval}: {len(forecast)} steps requested, {len(forecast)} returned")
         return forecast
 
+    def predict_varma(self, data, target_column, steps):
+        if self.varma_model is None or self.diff_orders is None:
+            raise ValueError("VARMA model or differencing orders not loaded.")
+        features = ['Open', 'High', 'Low', 'Close', 'Volume',
+                    'Quote asset volume', 'Number of trades',
+                    'Taker buy base asset volume', 'Taker buy quote asset volume']
+        available_features = [f for f in features if f in data.columns]
+        if target_column not in available_features:
+            raise ValueError(f"Target column {target_column} not in available features: {available_features}")
+        
+        # Ensure stationarity
+        stationary_data, _ = ensure_stationarity_multivariate(data[available_features], available_features)
+        if len(stationary_data) < 10:
+            raise ValueError(f"Insufficient data for VARMA forecasting. Need at least 10 rows, got {len(stationary_data)}.")
+        
+        # Generate forecast
+        forecast_df = self.varma_model.forecast(steps=steps)
+        if target_column not in forecast_df.columns:
+            raise ValueError(f"Target column {target_column} not in VARMA forecast columns: {forecast_df.columns}")
+        forecast = forecast_df[target_column].values
+        
+        # Reverse differencing if needed
+        if self.diff_orders[target_column] > 0:
+            last_value = data[target_column].iloc[-1]
+            diff_order = self.diff_orders[target_column]
+            # Integrate the differenced forecast
+            forecast = np.cumsum(forecast) + last_value
+            # Trim to steps if necessary
+            forecast = forecast[:steps]
+        
+        print(f"VARMA forecast for {self.interval}: {len(forecast)} steps requested, {len(forecast)} returned")
+        return forecast
+
+    def predict_garch(self, data, target_column, steps):
+        if self.garch_model is None:
+            raise ValueError("GARCH model not loaded.")
+        returns = data[target_column].pct_change().dropna() * 100
+        forecasts = self.garch_model.forecast(horizon=steps)
+        predicted_returns = forecasts.mean.values[-1, :]
+        last_price = data[target_column].iloc[-1]
+        forecast_prices = last_price * (1 + np.cumsum(predicted_returns / 100))
+        return forecast_prices
+
     def predict_lstm(self, data, target_column, steps, time_step=60):
-        """Make predictions using the LSTM model."""
-        if self.lstm_model is None:
-            raise ValueError("LSTM model not loaded.")
-        from sklearn.preprocessing import MinMaxScaler
-        scaler = MinMaxScaler(feature_range=(0, 1))
-        scaled_data = scaler.fit_transform(data[[target_column]])
-
+        if self.lstm_model is None or self.lstm_scaler is None:
+            raise ValueError("LSTM model or scaler not loaded.")
+        features = ['Open', 'High', 'Low', 'Close', 'Volume',
+                    'Quote asset volume', 'Number of trades',
+                    'Taker buy base asset volume', 'Taker buy quote asset volume']
+        scaled_data = self.lstm_scaler.transform(data[features])
         last_data = scaled_data[-time_step:]
-        current_batch = last_data.reshape((1, time_step, 1))
-
+        current_batch = last_data.reshape((1, time_step, len(features)))
         future_forecast = []
         for _ in range(steps):
             pred = self.lstm_model.predict(current_batch, verbose=0)
             future_forecast.append(pred[0, 0])
-            current_batch = np.append(current_batch[:, 1:, :], [[[pred[0, 0]]]], axis=1)
-
+            new_row = np.zeros((1, len(features)))
+            new_row[0, features.index(target_column)] = pred[0, 0]
+            current_batch = np.append(current_batch[:, 1:, :], [new_row], axis=1)
         future_forecast = np.array(future_forecast).reshape(-1, 1)
-        future_forecast = scaler.inverse_transform(future_forecast)
-        return future_forecast.flatten()
-
-    def predict_transformer(self, data, target_column, steps, time_step=60):
-        """Make predictions using the Transformer model."""
-        if self.transformer_model is None:
-            raise ValueError("Transformer model not loaded.")
-        from sklearn.preprocessing import MinMaxScaler
-        scaler = MinMaxScaler(feature_range=(0, 1))
-        scaled_data = scaler.fit_transform(data[[target_column]])
-
-        last_data = scaled_data[-time_step:]
-        current_batch = last_data.reshape((1, time_step, 1))
-
-        future_forecast = []
-        for _ in range(steps):
-            pred = self.transformer_model.predict(current_batch, verbose=0)
-            future_forecast.append(pred[0, 0])
-            current_batch = np.append(current_batch[:, 1:, :], [[[pred[0, 0]]]], axis=1)
-
-        future_forecast = np.array(future_forecast).reshape(-1, 1)
-        future_forecast = scaler.inverse_transform(future_forecast)
-        return future_forecast.flatten()
-
-    def get_predictions(self, symbol, period, interval, target_column, steps, model_type="arima", time_step=60):
-        """Fetch data and make predictions using the specified model."""
+        dummy = np.zeros((len(future_forecast), len(features)))
+        dummy[:, features.index(target_column)] = future_forecast.flatten()
+        future_forecast = self.lstm_scaler.inverse_transform(dummy)[:, features.index(target_column)]
+        return future_forecast
+    
+    def get_predictions(self, file_path, interval, target_column, steps, model_type="arima", time_step=60):
         if model_type.lower() not in self.loaded_models:
-            raise ValueError(f"Model type '{model_type}' not loaded. Available models: {self.loaded_models}")
-        data = self.fetch_data(symbol, period, interval)
+            raise ValueError(f"Model type '{model_type}' not loaded for {interval}. Available models: {self.loaded_models}")
+        data = self.fetch_data(file_path, interval)
         if data is None or data.empty:
             raise ValueError("No data available for prediction.")
-
         if model_type.lower() == "arima":
             return self.predict_arima(data, target_column, steps)
         elif model_type.lower() == "sarima":
@@ -187,7 +224,9 @@ class Predictor:
             return self.predict_garch(data, target_column, steps)
         elif model_type.lower() == "lstm":
             return self.predict_lstm(data, target_column, steps, time_step)
-        # elif model_type.lower() == "transformer":
-        #     return self.predict_transformer(data, target_column, steps, time_step)
+        elif model_type.lower() == "var":
+            return self.predict_var(data, target_column, steps)
+        elif model_type.lower() == "varma":
+            return self.predict_varma(data, target_column, steps)
         else:
             raise ValueError(f"Unsupported model type: {model_type}")
