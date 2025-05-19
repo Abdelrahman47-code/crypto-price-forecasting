@@ -83,6 +83,8 @@ Before running the project, ensure you have the following:
    - `btc_1d_data_2018_to_2025.csv`  
    Each file should have columns: `Open time`, `Open`, `High`, `Low`, `Close`, `Volume`, etc.
 
+   You can get the data from [here](https://www.kaggle.com/datasets/novandraanugrah/bitcoin-historical-datasets-2018-2024)
+
 5. **Train Models**  
    Run the training script to generate models for each interval:
    ```bash
