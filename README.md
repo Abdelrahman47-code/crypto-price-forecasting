@@ -14,22 +14,23 @@ Welcome to the **Crypto Price Predictor**, a web-based application built with St
 
 
 ## 📸 UI Screenshots
-![image](frontend/images/screen_1.png)
+![image](frontend/images/screen_1.PNG)
 
 ---
 
-![image](frontend/images/screen_2.png)
+![image](frontend/images/screen_2.PNG)
 
 ---
 
-![image](frontend/images/screen_3.png)
+![image](frontend/images/screen_3.PNG)
 
 ---
 
-![image](frontend/images/screen_4.png)
+![image](frontend/images/screen_4.PNG)
+
 ---
 
-![image](frontend/images/screen_5.png)
+![image](frontend/images/screen_5.PNG)
 
 ## 🚀 Features
 
