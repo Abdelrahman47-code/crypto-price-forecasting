@@ -2,17 +2,6 @@
 
 Welcome to the **Crypto Price Predictor**, a web-based application built with Streamlit to forecast cryptocurrency prices using advanced time-series models. This project focuses on Bitcoin (BTC) price prediction across multiple time intervals (15m, 1h, 4h, 1d) using models like ARIMA, SARIMA, VAR, VARMA, GARCH, and LSTM. Whether you're a data scientist, crypto enthusiast, or developer, this app provides an intuitive interface to explore historical data, generate forecasts, and evaluate model performance.
 
-
-## 👥 Team Members
-
-1) **Abdelrahman Ahmed Eldaba** - 412200228
-2) **Mohamed Hamza Moawad** - 412200058
-3) **Ahmed Mohamed Esmail** - 412200120
-4) **Hoda Mohamed Elwakeel** - 412200403
-5) **Al-Zahra Ali Eissa** - 412200010
-6) **Aseel Samy Al-Faqih** - 412200430
-
-
 ## 📸 UI Screenshots
 ![image](frontend/images/screen_1.PNG)
 
